@@ -45,11 +45,21 @@ class ImagesStream(PixletStream):
             raise ValueError("No path configured")
         path = Path(path)
 
-        installation_id = self.config.get("installation_id", path.stem)
+        installation_id = self.config.get("installation_id", path.stem) # TODO: Strip dashes
         background = self.config.get("background", True)
         app_config = self.config.get("app_config", {})
 
+        self.logger.info("Running curl")
+        result = subprocess.run(["curl", "https://raw.githubusercontent.com/DouweM/PebbleRevolution/master/resources/images/date_1.png"], capture_output=True)
+
+        if result.returncode != 0:
+            raise ValueError(f"Curl failed: {result.stderr.decode('utf-8')}")
+
+        self.logger.info("Result", result)
+        self.logger.info("Stdout", result.stdout)
+
         # TODO: Configuration of pixlet path
+        # TODO: $tz by default
         config_args = [f"{k}={v}" for k, v in app_config.items()]
         self.logger.info("Rendering pixlet", path, app_config.keys())
         result = subprocess.run(["pixlet", "render", path, '-o', '-', *config_args], capture_output=True)
