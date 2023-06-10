@@ -1,7 +1,11 @@
 """Stream type classes for tap-pixlet."""
 
 from __future__ import annotations
+from functools import partial
+import os
 from pathlib import Path
+from http.server import HTTPServer, SimpleHTTPRequestHandler
+import threading
 
 from typing import Iterable
 import subprocess
@@ -45,14 +49,31 @@ class ImagesStream(PixletStream):
             raise ValueError("No path configured")
         path = Path(path)
 
-        installation_id = self.config.get("installation_id", path.stem)
-        background = self.config.get("background", True)
-        app_config = self.config.get("app_config", {})
+        name = path.stem
+        script_path = path / f"{name}.star" if path.is_dir() else path
 
-        # TODO: Configuration of pixlet path
+        installation_id = self.config.get("installation_id", name) # TODO: Strip dashes
+        background = self.config.get("background", True)
+
+        app_config = self.config.get("app_config", {})
+        app_config["$tz"] = os.getenv("TZ")
+
+        if path.is_dir():
+            server = HTTPServer(('', 0), partial(SimpleHTTPRequestHandler, directory=path))
+            ip, port = server.server_address
+
+            daemon = threading.Thread(name='asset_server', target=server.serve_forever)
+            daemon.setDaemon(True)
+            daemon.start()
+
+            asset_url = f"http://{ip}:{port}/"
+            app_config["$asset_url"] = asset_url
+
+        self.logger.info("Rendering pixlet", script_path, app_config.keys())
+
         config_args = [f"{k}={v}" for k, v in app_config.items()]
-        self.logger.info("Rendering pixlet", path, app_config.keys())
-        result = subprocess.run(["pixlet", "render", path, '-o', '-', *config_args], capture_output=True)
+        # TODO: Configuration of pixlet path
+        result = subprocess.run(["pixlet", "render", script_path, '-o', '-', *config_args], capture_output=True)
 
         if result.returncode != 0:
             raise ValueError(f"Pixlet failed: {result.stderr.decode('utf-8')}")

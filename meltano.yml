@@ -22,7 +22,17 @@ plugins:
       kind: boolean
     - name: app_config
       kind: object
+    config:
+      path: example
   loaders:
-  - name: target-jsonl
-    variant: andyh1203
-    pip_url: target-jsonl
+  - name: target-webp
+    namespace: target_webp
+    pip_url: git+https://github.com/DouweM/target-webp.git
+    capabilities:
+    - about
+    - stream-maps
+    - record-flattening
+jobs:
+- name: example
+  tasks:
+  - tap-pixlet target-webp
