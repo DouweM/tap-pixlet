@@ -1,6 +1,7 @@
 """Stream type classes for tap-pixlet."""
 
 from __future__ import annotations
+from contextlib import contextmanager
 from functools import partial
 import os
 from pathlib import Path
@@ -48,32 +49,35 @@ class ImagesStream(PixletStream):
         if not path:
             raise ValueError("No path configured")
         path = Path(path)
-
         name = path.stem
         script_path = path / f"{name}.star" if path.is_dir() else path
 
         installation_id = self.config.get("installation_id", name) # TODO: Strip dashes
         background = self.config.get("background", True)
 
-        app_config = self.config.get("app_config", {})
-        app_config["$tz"] = os.getenv("TZ")
+        app_config = {
+            "$tz": os.getenv("TZ"),
+        }
+        app_config.update(self.config.get("app_config", {}))
 
-        if path.is_dir():
-            server = HTTPServer(('', 0), partial(SimpleHTTPRequestHandler, directory=path))
-            ip, port = server.server_address
+        with self.asset_server(path) as asset_url:
+            if asset_url:
+                app_config["$asset_url"] = asset_url
 
-            daemon = threading.Thread(name='asset_server', target=server.serve_forever)
-            daemon.setDaemon(True)
-            daemon.start()
+            self.logger.info("Rendering Pixlet app '%s' (config: %s)", script_path, app_config.keys())
 
-            asset_url = f"http://{ip}:{port}/"
-            app_config["$asset_url"] = asset_url
-
-        self.logger.info("Rendering pixlet", script_path, app_config.keys())
-
-        config_args = [f"{k}={v}" for k, v in app_config.items()]
-        # TODO: Configuration of pixlet path
-        result = subprocess.run(["pixlet", "render", script_path, '-o', '-', *config_args], capture_output=True)
+            # TODO: Configuration of pixlet path
+            result = subprocess.run(
+                [
+                    "pixlet",
+                    "render",
+                    script_path,
+                    '-o',
+                    '-',
+                    *[f"{k}={v}" for k, v in app_config.items()]
+                ],
+                capture_output=True
+            )
 
         if result.returncode != 0:
             raise ValueError(f"Pixlet failed: {result.stderr.decode('utf-8')}")
@@ -85,3 +89,23 @@ class ImagesStream(PixletStream):
             "installation_id": installation_id,
             "background": background,
         }
+
+    @contextmanager
+    def asset_server(self, path: Path) -> None:
+        if not path.is_dir():
+            yield None
+            return
+
+        server = HTTPServer(('', 0), partial(SimpleHTTPRequestHandler, directory=path))
+        ip, port = server.server_address
+
+        daemon = threading.Thread(name='asset_server', target=server.serve_forever)
+        daemon.setDaemon(True)
+        daemon.start()
+
+        asset_url = f"http://{ip}:{port}/"
+        self.logger.info("Serving local assets from %s", asset_url)
+
+        yield asset_url
+
+        server.shutdown()
