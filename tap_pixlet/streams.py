@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 import threading
+import time
 
 from typing import Iterable
 import subprocess
@@ -18,26 +19,38 @@ from singer_sdk import typing as th  # JSON Schema typing helpers
 from tap_pixlet.client import PixletStream
 
 
+
 class AssetServerRequestHandler(SimpleHTTPRequestHandler):
+    def __init__(self, *args, cache={}, **kwargs):
+        self.cache = cache
+
+        super().__init__(*args, **kwargs)
+
     def do_POST(self):
         length = int(self.headers['Content-Length'])
         data = self.rfile.read(length) if length else ""
 
-        result = subprocess.run(
-            [
-                "python",
-                self.translate_path(self.path),
-                data
-            ],
-            capture_output=True
-        )
+        if self.path in self.cache and data in self.cache[self.path]:
+            status, text = self.cache[self.path][data]
+        else:
+            result = subprocess.run(
+                [
+                    "python",
+                    self.translate_path(self.path),
+                    data
+                ],
+                capture_output=True
+            )
 
-        status = 200
-        text = result.stdout
 
-        if result.returncode != 0:
-            status = 500
-            text = json.dumps({"error": result.stderr.decode('utf-8')}).encode()
+            if result.returncode == 0:
+                status = 200
+                text = result.stdout
+            else:
+                status = 500
+                text = json.dumps({"error": result.stderr.decode('utf-8')}).encode()
+
+            self.cache.setdefault(self.path, {})[data] = (status, text)
 
         self.send_response(status)
         if text.startswith(b'{'):
@@ -94,23 +107,35 @@ class ImagesStream(PixletStream):
             if asset_url:
                 app_config["$asset_url"] = asset_url
 
-            self.logger.info("Rendering Pixlet app '%s' (config: %s)", script_path, app_config.keys())
+            attempts = 0
+            while True:
+                self.logger.info("Rendering Pixlet app '%s' (config: %s)", script_path, app_config.keys())
 
-            # TODO: Configuration of pixlet path
-            result = subprocess.run(
-                [
-                    "pixlet",
-                    "render",
-                    script_path,
-                    '-o',
-                    '-',
-                    *[f"{k}={v}" for k, v in app_config.items()]
-                ],
-                capture_output=True
-            )
+                # TODO: Configuration of pixlet path
+                result = subprocess.run(
+                    [
+                        "pixlet",
+                        "render",
+                        script_path,
+                        '-o',
+                        '-',
+                        *[f"{k}={v}" for k, v in app_config.items()]
+                    ],
+                    capture_output=True
+                )
 
-        if result.returncode != 0:
-            raise ValueError(f"Pixlet failed: {result.stderr.decode('utf-8')}")
+                if result.returncode == 0:
+                    break
+
+                error_message = result.stderr.decode('utf-8')
+
+                if "context deadline exceeded" in error_message and attempts < 3:
+                    attempts += 1
+                    self.logger.warning("Pixlet timed out, retrying after 3 seconds (%d/3)", attempts)
+                    time.sleep(3)
+                    continue
+
+                raise ValueError(f"Pixlet failed: {error_message}")
 
         image_data = base64.b64encode(result.stdout).decode("utf-8")
 
@@ -126,7 +151,8 @@ class ImagesStream(PixletStream):
             yield None
             return
 
-        server = HTTPServer(('', 0), partial(AssetServerRequestHandler, directory=path))
+        cache = {}
+        server = HTTPServer(('', 0), partial(AssetServerRequestHandler, directory=path, cache=cache))
         ip, port = server.server_address
 
         daemon = threading.Thread(name='asset_server', target=server.serve_forever)
