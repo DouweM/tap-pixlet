@@ -3,6 +3,7 @@
 from __future__ import annotations
 from contextlib import contextmanager
 from functools import partial
+import json
 import os
 from pathlib import Path
 from http.server import HTTPServer, SimpleHTTPRequestHandler
@@ -16,6 +17,35 @@ from singer_sdk import typing as th  # JSON Schema typing helpers
 
 from tap_pixlet.client import PixletStream
 
+
+class AssetServerRequestHandler(SimpleHTTPRequestHandler):
+    def do_POST(self):
+        length = int(self.headers['Content-Length'])
+        data = self.rfile.read(length) if length else ""
+
+        result = subprocess.run(
+            [
+                "python",
+                self.translate_path(self.path),
+                data
+            ],
+            capture_output=True
+        )
+
+        status = 200
+        text = result.stdout
+
+        if result.returncode != 0:
+            status = 500
+            text = json.dumps({"error": result.stderr.decode('utf-8')}).encode()
+
+        self.send_response(status)
+        if text.startswith(b'{'):
+            self.send_header('Content-Type', 'application/json')
+        self.send_header('Content-Length', len(text))
+        self.end_headers()
+
+        self.wfile.write(text)
 
 class ImagesStream(PixletStream):
     """Stream of rendered WebP images."""
@@ -96,7 +126,7 @@ class ImagesStream(PixletStream):
             yield None
             return
 
-        server = HTTPServer(('', 0), partial(SimpleHTTPRequestHandler, directory=path))
+        server = HTTPServer(('', 0), partial(AssetServerRequestHandler, directory=path))
         ip, port = server.server_address
 
         daemon = threading.Thread(name='asset_server', target=server.serve_forever)

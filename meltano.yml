@@ -24,6 +24,8 @@ plugins:
       kind: object
     config:
       path: example
+      app_config:
+        name: world
   loaders:
   - name: target-webp
     namespace: target_webp

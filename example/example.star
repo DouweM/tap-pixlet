@@ -22,9 +22,23 @@ def image_data(url):
 
 def main(config):
     ASSET_URL = config.get("$asset_url")
+    NAME = config.get("name")
+
+    image = image_data(ASSET_URL + 'meltano.png')
+
+    response = http.post(ASSET_URL + 'hello.py', json_body={"name": NAME})
+    if response.status_code != 200:
+        fail("Script failed", response.json()["error"])
+    text = response.json()["response"]
 
     return render.Root(
-        child=render.Box(
-          child=render.Image(src=image_data(ASSET_URL + 'example.png'), width=WIDTH)
+        child=render.Column(
+            expanded=True,
+            main_align="space_around",
+            cross_align="center",
+            children=[
+                render.Image(src=image, width=WIDTH),
+                render.Text(text)
+            ]
         )
     )
