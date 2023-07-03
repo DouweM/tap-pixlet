@@ -241,16 +241,18 @@ class ImagesStream(PixletStream):
         app_source = compile_app_source(app_source, path)
 
         with tempfile.NamedTemporaryFile(mode="w+t", prefix=path.stem, suffix=".star", delete=False) as temp_app_file:
-            with temp_app_file.file as temp_app_file:
-                temp_app_file.write(app_source)
+            filename = temp_app_file.name
+
+            with temp_app_file.file as file:
+                file.write(app_source)
 
             try:
-                yield Path(temp_app_file.name)
+                yield Path(filename)
             except:
                 try:
                     raise
                 finally:
-                    self.logger.info("Compiled Pixlet app: %s", temp_app_file.name)
+                    self.logger.info("Compiled Pixlet app: %s", filename)
             else:
-                os.unlink(temp_app_file.name)
+                os.unlink(filename)
 
