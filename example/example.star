@@ -1,35 +1,12 @@
 load("render.star", "render")
-load("http.star", "http")
-load("cache.star", "cache")
-
-WIDTH = 64
-HEIGHT = 32
-
-def image_data(url):
-    cached = cache.get(url)
-    if cached:
-        return cached
-
-    response = http.get(url)
-
-    if response.status_code != 200:
-        fail("Image not found", url)
-
-    data = response.body()
-    cache.set(url, data)
-
-    return data
+load("pixlib/const.star", "const")
+load("./client.star", "client")
 
 def main(config):
-    ASSET_URL = config.get("$asset_url")
-    NAME = config.get("name")
+    NAME = config.get("name") or "world"
 
-    image = image_data(ASSET_URL + 'meltano.png')
-
-    response = http.post(ASSET_URL + 'hello.py', json_body={"name": NAME})
-    if response.status_code != 200:
-        fail("Script failed", response.json()["error"])
-    text = response.json()["response"]
+    image = client.get_image(config)
+    text = client.get_response(config, NAME)
 
     return render.Root(
         child=render.Column(
@@ -37,7 +14,7 @@ def main(config):
             main_align="space_around",
             cross_align="center",
             children=[
-                render.Image(src=image, width=WIDTH),
+                render.Image(src=image, width=const.WIDTH),
                 render.Text(text)
             ]
         )

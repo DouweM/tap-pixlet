@@ -7,8 +7,11 @@ import json
 import os
 from pathlib import Path
 from http.server import HTTPServer, SimpleHTTPRequestHandler
+import re
+import tempfile
 import threading
 import time
+import importlib.resources
 
 from typing import Iterable
 import subprocess
@@ -42,7 +45,6 @@ class AssetServerRequestHandler(SimpleHTTPRequestHandler):
                 capture_output=True
             )
 
-
             if result.returncode == 0:
                 status = 200
                 text = result.stdout
@@ -59,6 +61,68 @@ class AssetServerRequestHandler(SimpleHTTPRequestHandler):
         self.end_headers()
 
         self.wfile.write(text)
+
+def compile_app_source(app_source, dir_path):
+    def update_symbol(symbol, source):
+        symbol_regex = rf'(?<![a-z]){symbol}\.([A-Z_]+(?=[^A-Z])|([a-z_]+\())'
+        return re.sub(symbol_regex, f"{symbol}__\\1", source)
+
+    def extract_loads(source):
+        all_loads = {'system': {}, 'resolved': {}}
+        my_loads = {'system': {}, 'resolved': {}}
+
+        def load(match):
+            load_path = match['path']
+            symbol = match['symbol']
+            if match["assign_symbol"]:
+                # TODO: Support symbol reassigning
+                raise Exception("Loading with symbol reassignment is not supported")
+
+            file_path = None
+            if load_path.startswith('pixlib/'):
+                file_path = importlib.resources.files("tap_pixlet.pixlib") / Path(load_path).relative_to('pixlib')
+            elif load_path.startswith('./'):
+                file_path = dir_path / load_path
+
+            if file_path:
+                load_source = file_path.read_text()
+                load_source, child_loads = extract_loads(load_source)
+                load_source = update_symbol(symbol, load_source)
+
+                all_loads['system'].update(child_loads['system'])
+                all_loads['resolved'].update(child_loads['resolved'])
+
+                my_loads['resolved'][symbol] = "\n".join([
+                    f"### Start {load_path}",
+                    load_source.strip("\n"),
+                    f"### End {load_path}"
+                ])
+            else:
+                load_source = f'load("{load_path}", "{symbol}")'
+                my_loads['system'][symbol] = load_source
+
+            return ""
+
+        load_regex = r'^load\([\'"](?P<path>[^"\']+.star)[\'"]\, ?((?P<assign_symbol>[a-z_]+) ?= ?)?[\'"](?P<symbol>[^"\']+)[\'"]\)\n'
+        source = re.sub(load_regex, load, source, flags=re.MULTILINE)
+
+        for symbol in my_loads['resolved'].keys():
+            source = update_symbol(symbol, source)
+
+        all_loads['system'].update(my_loads['system'])
+        all_loads['resolved'].update(my_loads['resolved'])
+
+        return source, all_loads
+
+    app_source, loads = extract_loads(app_source)
+
+    return "\n\n".join(
+        [
+            *loads['system'].values(),
+            *loads['resolved'].values(),
+            app_source.strip("\n")
+        ]
+    )
 
 class ImagesStream(PixletStream):
     """Stream of rendered WebP images."""
@@ -93,7 +157,6 @@ class ImagesStream(PixletStream):
             raise ValueError("No path configured")
         path = Path(path)
         name = path.stem
-        script_path = path / f"{name}.star" if path.is_dir() else path
 
         installation_id = self.config.get("installation_id", name) # TODO: Strip dashes
         background = self.config.get("background", True)
@@ -107,35 +170,36 @@ class ImagesStream(PixletStream):
             if asset_url:
                 app_config["$asset_url"] = asset_url
 
-            attempts = 0
-            while True:
-                self.logger.info("Rendering Pixlet app '%s' (config: %s)", script_path, app_config.keys())
+            with self.compile_app(path) as app_path:
+                attempts = 0
+                while True:
+                    self.logger.info("Rendering Pixlet app '%s' (config: %s)", app_path, app_config.keys())
 
-                # TODO: Configuration of pixlet path
-                result = subprocess.run(
-                    [
-                        "pixlet",
-                        "render",
-                        script_path,
-                        '-o',
-                        '-',
-                        *[f"{k}={v}" for k, v in app_config.items()]
-                    ],
-                    capture_output=True
-                )
+                    # TODO: Configuration of pixlet path
+                    result = subprocess.run(
+                        [
+                            "pixlet",
+                            "render",
+                            app_path,
+                            '-o',
+                            '-',
+                            *[f"{k}={v}" for k, v in app_config.items()]
+                        ],
+                        capture_output=True
+                    )
 
-                if result.returncode == 0:
-                    break
+                    if result.returncode == 0:
+                        break
 
-                error_message = result.stderr.decode('utf-8')
+                    error_message = result.stderr.decode('utf-8')
 
-                if "context deadline exceeded" in error_message and attempts < 3:
-                    attempts += 1
-                    self.logger.warning("Pixlet timed out, retrying after 3 seconds (%d/3)", attempts)
-                    time.sleep(3)
-                    continue
+                    if "context deadline exceeded" in error_message and attempts < 3:
+                        attempts += 1
+                        self.logger.warning("Pixlet timed out, retrying after 3 seconds (%d/3)", attempts)
+                        time.sleep(3)
+                        continue
 
-                raise ValueError(f"Pixlet failed: {error_message}")
+                    raise ValueError(f"Pixlet failed: {error_message}")
 
         image_data = base64.b64encode(result.stdout).decode("utf-8")
 
@@ -165,3 +229,28 @@ class ImagesStream(PixletStream):
         yield asset_url
 
         server.shutdown()
+
+    @contextmanager
+    def compile_app(self, path: Path):
+        if not path.is_dir():
+            yield path
+            return
+
+        app_path = path / f"{path.stem}.star"
+        app_source = app_path.read_text()
+        app_source = compile_app_source(app_source, path)
+
+        with tempfile.NamedTemporaryFile(mode="w+t", prefix=path.stem, suffix=".star", delete=False) as temp_app_file:
+            with temp_app_file.file as temp_app_file:
+                temp_app_file.write(app_source)
+
+            try:
+                yield Path(temp_app_file.name)
+            except:
+                try:
+                    raise
+                finally:
+                    self.logger.info("Compiled Pixlet app: %s", temp_app_file.name)
+            else:
+                os.unlink(temp_app_file.name)
+

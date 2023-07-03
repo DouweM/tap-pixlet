@@ -25,7 +25,7 @@ plugins:
     config:
       path: example
       app_config:
-        name: world
+        name: Douwe
   loaders:
   - name: target-webp
     namespace: target_webp
