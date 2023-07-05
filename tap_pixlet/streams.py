@@ -22,8 +22,8 @@ from singer_sdk import typing as th  # JSON Schema typing helpers
 from tap_pixlet.client import PixletStream
 
 
-
-class AssetServerRequestHandler(SimpleHTTPRequestHandler):
+# TODO: Move to rpc.py
+class RPCServerRequestHandler(SimpleHTTPRequestHandler):
     def __init__(self, *args, cache={}, **kwargs):
         self.cache = cache
 
@@ -33,17 +33,22 @@ class AssetServerRequestHandler(SimpleHTTPRequestHandler):
         length = int(self.headers['Content-Length'])
         data = self.rfile.read(length) if length else ""
 
-        if self.path in self.cache and data in self.cache[self.path]:
-            status, text = self.cache[self.path][data]
+        if (self.path, data) in self.cache:
+            status, text = self.cache[(self.path, data)]
+            if status == -1: # Still generating response
+                status = 500
+                text = json.dumps({"error": "context deadline exceeded"}).encode()
         else:
-            result = subprocess.run(
-                [
-                    "python",
-                    self.translate_path(self.path),
-                    data
-                ],
-                capture_output=True
-            )
+            self.cache[(self.path, data)] = (-1, None)
+
+            # TODO: Log what happens here, other than default HTTPServer logging
+            # TODO: Ensure file is inside Pixlib or app directory
+            if self.path.startswith('/pixlib/'):
+                file_path = importlib.resources.files("tap_pixlet.pixlib") / Path(self.path).relative_to('/pixlib')
+            else:
+                file_path = self.translate_path(self.path)
+
+            result = subprocess.run(["python", file_path, data], capture_output=True)
 
             if result.returncode == 0:
                 status = 200
@@ -52,7 +57,7 @@ class AssetServerRequestHandler(SimpleHTTPRequestHandler):
                 status = 500
                 text = json.dumps({"error": result.stderr.decode('utf-8')}).encode()
 
-            self.cache.setdefault(self.path, {})[data] = (status, text)
+            self.cache[(self.path, data)] = (status, text)
 
         self.send_response(status)
         if text.startswith(b'{'):
@@ -62,12 +67,12 @@ class AssetServerRequestHandler(SimpleHTTPRequestHandler):
 
         self.wfile.write(text)
 
-def compile_app_source(app_source, dir_path):
+def compile_app_source(app_path, app_source, dir_path, rpc_url):
     def update_symbol(symbol, source):
         symbol_regex = rf'(?<![a-z]){symbol}\.([A-Z_]+(?=[^A-Z])|([a-z_]+\())'
         return re.sub(symbol_regex, f"{symbol}__\\1", source)
 
-    def extract_loads(source):
+    def extract_loads(path, source):
         all_loads = {'system': {}, 'resolved': {}}
         my_loads = {'system': {}, 'resolved': {}}
 
@@ -85,21 +90,22 @@ def compile_app_source(app_source, dir_path):
                 file_path = dir_path / load_path
 
             if file_path:
+                load_type = 'resolved'
+
                 load_source = file_path.read_text()
-                load_source, child_loads = extract_loads(load_source)
+                load_source, child_loads = extract_loads(load_path, load_source)
                 load_source = update_symbol(symbol, load_source)
 
                 all_loads['system'].update(child_loads['system'])
                 all_loads['resolved'].update(child_loads['resolved'])
-
-                my_loads['resolved'][symbol] = "\n".join([
-                    f"### Start {load_path}",
-                    load_source.strip("\n"),
-                    f"### End {load_path}"
-                ])
             else:
-                load_source = f'load("{load_path}", "{symbol}")'
-                my_loads['system'][symbol] = load_source
+                load_type = 'system'
+                load_source = "\n".join([
+                    f"### Loaded from {path}",
+                    f'load("{load_path}", "{symbol}")'
+                ])
+
+            my_loads[load_type][symbol] = load_source
 
             return ""
 
@@ -109,12 +115,21 @@ def compile_app_source(app_source, dir_path):
         for symbol in my_loads['resolved'].keys():
             source = update_symbol(symbol, source)
 
+        if rpc_url:
+            source = source.replace("<<PIXLIB_RPC_URL>>", rpc_url)
+
+        source = "\n".join([
+            f"### Start {path}", # TODO: For locally loaded files, should include path relative to project
+            source.strip("\n"),
+            f"### End {path}"
+        ])
+
         all_loads['system'].update(my_loads['system'])
         all_loads['resolved'].update(my_loads['resolved'])
 
         return source, all_loads
 
-    app_source, loads = extract_loads(app_source)
+    app_source, loads = extract_loads(app_path, app_source)
 
     return "\n\n".join(
         [
@@ -146,6 +161,11 @@ class ImagesStream(PixletStream):
             th.BooleanType,
             description="When false, show application immediately",
         ),
+        th.Property(
+            "magnification",
+            th.IntegerType,
+            description="Increase image dimension by a factor (useful for debugging)",
+        ),
     ).to_dict()
 
     def get_records(
@@ -160,17 +180,15 @@ class ImagesStream(PixletStream):
 
         installation_id = self.config.get("installation_id", name) # TODO: Strip dashes
         background = self.config.get("background", True)
+        magnification = self.config.get("magnification", 1)
 
         app_config = {
             "$tz": os.getenv("TZ"),
         }
         app_config.update(self.config.get("app_config", {}))
 
-        with self.asset_server(path) as asset_url:
-            if asset_url:
-                app_config["$asset_url"] = asset_url
-
-            with self.compile_app(path) as app_path:
+        with self.rpc_server(path) as rpc_url:
+            with self.compile_app(path, rpc_url) as app_path:
                 attempts = 0
                 while True:
                     self.logger.info("Rendering Pixlet app '%s' (config: %s)", app_path, app_config.keys())
@@ -181,6 +199,8 @@ class ImagesStream(PixletStream):
                             "pixlet",
                             "render",
                             app_path,
+                            '-m',
+                            str(magnification),
                             '-o',
                             '-',
                             *[f"{k}={v}" for k, v in app_config.items()]
@@ -193,10 +213,10 @@ class ImagesStream(PixletStream):
 
                     error_message = result.stderr.decode('utf-8')
 
-                    if "context deadline exceeded" in error_message and attempts < 3:
+                    if "context deadline exceeded" in error_message and attempts < 5:
                         attempts += 1
-                        self.logger.warning("Pixlet timed out, retrying after 3 seconds (%d/3)", attempts)
-                        time.sleep(3)
+                        self.logger.warning("Pixlet timed out, retrying after 5 seconds (%d/5)", attempts)
+                        time.sleep(5)
                         continue
 
                     raise ValueError(f"Pixlet failed: {error_message}")
@@ -210,37 +230,37 @@ class ImagesStream(PixletStream):
         }
 
     @contextmanager
-    def asset_server(self, path: Path) -> None:
+    def rpc_server(self, path: Path) -> None:
         if not path.is_dir():
             yield None
             return
 
         cache = {}
-        server = HTTPServer(('', 0), partial(AssetServerRequestHandler, directory=path, cache=cache))
+        server = HTTPServer(('', 0), partial(RPCServerRequestHandler, directory=path, cache=cache))
         ip, port = server.server_address
 
-        daemon = threading.Thread(name='asset_server', target=server.serve_forever)
+        daemon = threading.Thread(name='rpc_server', target=server.serve_forever)
         daemon.setDaemon(True)
         daemon.start()
 
-        asset_url = f"http://{ip}:{port}/"
-        self.logger.info("Serving local assets from %s", asset_url)
+        rpc_url = f"http://{ip}:{port}/"
+        self.logger.info("Pixlib RPC Server ready at %s", rpc_url)
 
-        yield asset_url
+        yield rpc_url
 
         server.shutdown()
 
     @contextmanager
-    def compile_app(self, path: Path):
+    def compile_app(self, path: Path, rpc_url: str | None) -> None:
         if not path.is_dir():
             yield path
             return
 
         app_path = path / f"{path.stem}.star"
         app_source = app_path.read_text()
-        app_source = compile_app_source(app_source, path)
+        app_source = compile_app_source(app_path, app_source, path, rpc_url)
 
-        with tempfile.NamedTemporaryFile(mode="w+t", prefix=path.stem, suffix=".star", delete=False) as temp_app_file:
+        with tempfile.NamedTemporaryFile(mode="w+t", prefix=path.stem + ".", suffix=".star", delete=False) as temp_app_file:
             filename = temp_app_file.name
 
             with temp_app_file.file as file:

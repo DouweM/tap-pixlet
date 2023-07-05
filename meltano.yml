@@ -20,6 +20,8 @@ plugins:
     - name: installation_id
     - name: background
       kind: boolean
+    - name: magnification
+      kind: integer
     - name: app_config
       kind: object
     config:

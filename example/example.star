@@ -5,8 +5,8 @@ load("./client.star", "client")
 def main(config):
     NAME = config.get("name") or "world"
 
-    image = client.get_image(config)
-    text = client.get_response(config, NAME)
+    image = client.get_image()
+    text = client.get_response(NAME)
 
     return render.Root(
         child=render.Column(
