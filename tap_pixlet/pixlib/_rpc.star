@@ -8,14 +8,14 @@ def _rpc._file_url(path):
 
     return _rpc.URL + path
 
-def _rpc.read(path, json=False):
+def _rpc.read(path):
     url = _rpc._file_url(path)
 
     response = http.get(url)
     if response.status_code != 200:
         fail("File not found:", path)
 
-    if json:
+    if path.endswith('.json'):
         return response.json()
     else:
         return response.body()
@@ -33,11 +33,11 @@ def _rpc.execute(path, json=None, input=None):
     if response.status_code != 200:
         fail("Failed to execute '{}': {}".format(path, response.json()["error"]))
 
-    if response.headers['Content-Type'] == 'application/json':
+    if 'Content-Type' in response.headers and response.headers['Content-Type'] == 'application/json':
         return response.json()
     else:
         return response.body()
 
 def _rpc.function(function, args):
-  return _rpc.execute("pixlib/_rpc.py", {"function": function, "args": args})["result"]
+    return _rpc.execute("pixlib/_rpc.py", {"function": function, "args": args})["result"]
 
