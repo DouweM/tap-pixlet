@@ -67,7 +67,7 @@ class RPCServerRequestHandler(SimpleHTTPRequestHandler):
 
         self.wfile.write(text)
 
-def compile_app_source(app_path, app_source, dir_path, rpc_url):
+def compile_app_source(path, app_source, rpc_url):
     def update_symbol(symbol, source):
         symbol_regex = rf'(?<![a-z]){symbol}\.([A-Z_]+(?=[^A-Z])|([a-z_]+\())'
         return re.sub(symbol_regex, f"{symbol}__\\1", source)
@@ -87,7 +87,7 @@ def compile_app_source(app_path, app_source, dir_path, rpc_url):
             if load_path.startswith('pixlib/'):
                 file_path = importlib.resources.files("tap_pixlet.pixlib") / Path(load_path).relative_to('pixlib')
             elif load_path.startswith('./'):
-                file_path = dir_path / load_path
+                file_path = path.parent / load_path
 
             if file_path:
                 load_type = 'resolved'
@@ -129,7 +129,7 @@ def compile_app_source(app_path, app_source, dir_path, rpc_url):
 
         return source, all_loads
 
-    app_source, loads = extract_loads(app_path, app_source)
+    app_source, loads = extract_loads(path, app_source)
 
     return "\n\n".join(
         [
@@ -174,9 +174,11 @@ class ImagesStream(PixletStream):
     ) -> Iterable[dict]:
         path = self.config.get("path")
         if not path:
-            raise ValueError("No path configured")
-        path = Path(path)
+            raise ValueError("No 'path' configured")
+        path = Path(path).resolve()
+
         name = path.stem
+        path = path / f"{name}.star" if path.is_dir() else path
 
         installation_id = self.config.get("installation_id", name) # TODO: Strip dashes
         background = self.config.get("background", True)
@@ -188,17 +190,17 @@ class ImagesStream(PixletStream):
         app_config.update(self.config.get("app_config", {}))
 
         with self.rpc_server(path) as rpc_url:
-            with self.compile_app(path, rpc_url) as app_path:
+            with self.compile_app(path, rpc_url) as path:
                 attempts = 0
                 while True:
-                    self.logger.info("Rendering Pixlet app '%s' (config: %s)", app_path, app_config.keys())
+                    self.logger.info("Rendering Pixlet app '%s' (config keys: %s)", path, list(app_config.keys()))
 
                     # TODO: Configuration of pixlet path
                     result = subprocess.run(
                         [
                             "pixlet",
                             "render",
-                            app_path,
+                            path,
                             '-m',
                             str(magnification),
                             '-o',
@@ -231,12 +233,8 @@ class ImagesStream(PixletStream):
 
     @contextmanager
     def rpc_server(self, path: Path) -> None:
-        if not path.is_dir():
-            yield None
-            return
-
         cache = {}
-        server = HTTPServer(('', 0), partial(RPCServerRequestHandler, directory=path, cache=cache))
+        server = HTTPServer(('', 0), partial(RPCServerRequestHandler, directory=path.parent, cache=cache))
         ip, port = server.server_address
 
         daemon = threading.Thread(name='rpc_server', target=server.serve_forever)
@@ -252,13 +250,8 @@ class ImagesStream(PixletStream):
 
     @contextmanager
     def compile_app(self, path: Path, rpc_url: str | None) -> None:
-        if not path.is_dir():
-            yield path
-            return
-
-        app_path = path / f"{path.stem}.star"
-        app_source = app_path.read_text()
-        app_source = compile_app_source(app_path, app_source, path, rpc_url)
+        app_source = path.read_text()
+        app_source = compile_app_source(path, app_source, rpc_url)
 
         with tempfile.NamedTemporaryFile(mode="w+t", prefix=path.stem + ".", suffix=".star", delete=False) as temp_app_file:
             filename = temp_app_file.name
