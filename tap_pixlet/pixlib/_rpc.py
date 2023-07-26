@@ -5,8 +5,13 @@ def html__unescape(s):
     import html
     return html.unescape(s)
 
+def html__to_xml(s):
+    from lxml import html, etree
+    return etree.tostring(html.fromstring(s)).decode("utf-8")
+
 functions = {
-    "html.unescape": html__unescape
+    "html.unescape": html__unescape,
+    "html.to_xml": html__to_xml
 }
 
 input = json.loads(sys.argv[1])
