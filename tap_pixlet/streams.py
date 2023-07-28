@@ -5,6 +5,7 @@ from contextlib import contextmanager
 from functools import partial
 import json
 import os
+import sys
 from pathlib import Path
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 import re
@@ -47,6 +48,10 @@ class RPCServerRequestHandler(SimpleHTTPRequestHandler):
                 file_path = importlib.resources.files("tap_pixlet.pixlib") / Path(self.path).relative_to('/pixlib')
             else:
                 file_path = self.translate_path(self.path)
+
+            # Inherit reachable Python modules
+            env = os.environ
+            env['PYTHONPATH'] = os.pathsep.join(sys.path)
 
             result = subprocess.run(["python", file_path, data], capture_output=True)
 
