@@ -4,6 +4,10 @@ Pixlib is the unofficial standard library for [Pixlet](https://github.com/tidbyt
 
 Pixlib is included with [`tap-pixlet`](https://github.com/DouweM/tap-pixlet), the unofficial [Tidbyt](https://tidbyt.com) app runner that powers [Pixbyt](https://pixbyt.dev), the self-hosted Tidbyt app server for advanced apps that aren't supported by the official [community app](https://tidbyt.dev/docs/publish/community-apps) server that you can access through Tidbyt's mobile app.
 
+## Example
+
+See [`hello-world` app](https://github.com/DouweM/pixbyt/tree/main/apps/hello-world).
+
 ## Usage
 
 See [Pixbyt](https://pixbyt.dev).
