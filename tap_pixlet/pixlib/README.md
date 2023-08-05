@@ -26,8 +26,8 @@ load("pixlib/const.star", "const")
 load("pixlib/file.star", "file")
 ```
 
-- `file.read(path)`: Read local file. Returns contents as a string or deserialized JSON object.
-- `file.exec(path, json?, input?)`: Execute local Python script, with optional JSON or plaintext input (provided to the script as a command line argument). Returns script's otput as a string or deserialized JSON object.
+- `file.read(path)`: Read local file. Returns contents as a (byte)string or deserialized JSON object.
+- `file.exec(path, json?, input?)`: Execute local Python script, with optional JSON or plaintext input (provided to the script as a command line argument). Returns script's output as a string or deserialized JSON object.
 
 ### `pixlib/font`
 
@@ -68,14 +68,14 @@ load("pixlib/const.star", "const")
 load("./client.star", "client")
 ```
 
-#### Local Starlark files
+#### Local Starlark modules
 
-Your Starlark files can load constants and functions from other local Starlark files.
+Your Starlark applet can load modules containing constants and functions from other local Starlark files.
 
 ##### Define
 
 ```python
-# `./<module.star>`
+# `./<module>.star`
 
 <module>.<CONSTANT_NAME> = <value>
 
@@ -87,11 +87,10 @@ def <module>.<function>(<args...>):
 # `./client.star`
 load("http.star", "http")
 
-client.URL = "https://example.com/api/{}.json"
+client.URL = "https://example.com/api/%s.json"
 
 def client.load(path):
   return http.get(client.URL % path)
-
 ```
 
 ##### Reference
