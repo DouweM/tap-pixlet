@@ -9,9 +9,14 @@ def html__to_xml(s):
     from lxml import html, etree
     return etree.tostring(html.fromstring(s)).decode("utf-8")
 
+def input__read():
+    import os
+    return os.getenv("APP_INPUT")
+
 functions = {
     "html.unescape": html__unescape,
-    "html.to_xml": html__to_xml
+    "html.to_xml": html__to_xml,
+    "input.read": input__read
 }
 
 input = json.loads(sys.argv[1])

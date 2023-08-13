@@ -25,8 +25,9 @@ from tap_pixlet.client import PixletStream
 
 # TODO: Move to rpc.py
 class RPCServerRequestHandler(SimpleHTTPRequestHandler):
-    def __init__(self, *args, cache={}, **kwargs):
+    def __init__(self, *args, cache={}, env={}, **kwargs):
         self.cache = cache
+        self.env = env
 
         super().__init__(*args, **kwargs)
 
@@ -49,11 +50,13 @@ class RPCServerRequestHandler(SimpleHTTPRequestHandler):
             else:
                 file_path = self.translate_path(self.path)
 
-            # Inherit reachable Python modules
-            env = os.environ
-            env['PYTHONPATH'] = os.pathsep.join(sys.path)
+            env = {
+                **os.environ,
+                'PYTHONPATH': os.pathsep.join(sys.path), # Inherit reachable Python modules
+                **self.env
+            }
 
-            result = subprocess.run(["python", file_path, data], capture_output=True)
+            result = subprocess.run(["python", file_path, data], env=env, capture_output=True)
 
             if result.returncode == 0:
                 status = 200
@@ -188,13 +191,14 @@ class ImagesStream(PixletStream):
         installation_id = self.config.get("installation_id", name) # TODO: Strip dashes
         background = self.config.get("background", True)
         magnification = self.config.get("magnification", 1)
+        app_input = self.config.get("app_input", "")
 
         app_config = {
             "$tz": os.getenv("TZ"),
         }
         app_config.update(self.config.get("app_config", {}))
 
-        with self.rpc_server(path) as rpc_url:
+        with self.rpc_server(path, app_input, app_config) as rpc_url:
             with self.compile_app(path, rpc_url) as path:
                 attempts = 0
                 while True:
@@ -237,9 +241,14 @@ class ImagesStream(PixletStream):
         }
 
     @contextmanager
-    def rpc_server(self, path: Path) -> None:
+    def rpc_server(self, path: Path, app_input: str, app_config: dict) -> None:
         cache = {}
-        server = HTTPServer(('', 0), partial(RPCServerRequestHandler, directory=path.parent, cache=cache))
+        env = {
+            'APP_INPUT': app_input,
+            'APP_CONFIG': json.dumps(app_config),
+        }
+
+        server = HTTPServer(('', 0), partial(RPCServerRequestHandler, directory=path.parent, cache=cache, env=env))
         ip, port = server.server_address
 
         daemon = threading.Thread(name='rpc_server', target=server.serve_forever)

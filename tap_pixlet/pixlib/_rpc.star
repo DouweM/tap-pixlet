@@ -38,6 +38,6 @@ def _rpc.execute(path, json=None, input=None):
     else:
         return response.body()
 
-def _rpc.function(function, args):
+def _rpc.function(function, args = []):
     return _rpc.execute("pixlib/_rpc.py", {"function": function, "args": args})["result"]
 
