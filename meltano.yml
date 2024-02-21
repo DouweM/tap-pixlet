@@ -24,6 +24,8 @@ plugins:
       kind: integer
     - name: app_config
       kind: object
+    - name: app_input
+      kind: string
     config:
       path: example
       app_config:
