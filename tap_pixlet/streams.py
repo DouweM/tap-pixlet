@@ -198,44 +198,58 @@ class ImagesStream(PixletStream):
         }
         app_config.update(self.config.get("app_config", {}))
 
-        with self.rpc_server(path, app_input, app_config) as rpc_url:
-            with self.compile_app(path, rpc_url) as path:
-                attempts = 0
-                while True:
-                    self.logger.info("Rendering Pixlet app '%s' (config keys: %s)", path, list(app_config.keys()))
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_image_path = Path(temp_dir) / "image.webp"
 
-                    # TODO: Configuration of pixlet path
-                    result = subprocess.run(
-                        [
-                            "pixlet",
-                            "render",
-                            path,
-                            '-m',
-                            str(magnification),
-                            '-o',
-                            '-',
-                            *[f"{k}={v}" for k, v in app_config.items()]
-                        ],
-                        capture_output=True
-                    )
+            with self.rpc_server(path, app_input, app_config) as rpc_url:
+                with self.compile_app(path, rpc_url) as path:
+                    attempts = 0
+                    while True:
+                        self.logger.info("Rendering Pixlet app '%s' (config keys: %s)", path, list(app_config.keys()))
 
-                    if result.returncode == 0:
-                        break
+                        # TODO: Configuration of pixlet path
+                        result = subprocess.run(
+                            [
+                                "pixlet",
+                                "render",
+                                path,
+                                '-m',
+                                str(magnification),
+                                '-o',
+                                str(temp_image_path),
+                                *[f"{k}={v}" for k, v in app_config.items()]
+                            ],
+                            capture_output=True
+                        )
 
-                    error_message = result.stderr.decode('utf-8')
+                        # TODO: Stream this using asyncio!
+                        print_output = result.stdout.decode('utf-8').strip()
+                        if print_output:
+                            for line in print_output.split("\n"):
+                                # Strip [filename] prefix
+                                line = re.sub(r'^\[[^\]]+\] ', '', line)
 
-                    if "context deadline exceeded" in error_message and attempts < 5:
-                        attempts += 1
-                        self.logger.warning("Pixlet timed out, retrying after 5 seconds (%d/5)", attempts)
-                        time.sleep(5)
-                        continue
+                                self.logger.info("[app] %s", line)
 
-                    raise ValueError(f"Pixlet failed: {error_message}")
+                        if result.returncode == 0:
+                            break
 
-        image_data = base64.b64encode(result.stdout).decode("utf-8")
+                        error_message = result.stderr.decode('utf-8')
+
+                        if "context deadline exceeded" in error_message and attempts < 5:
+                            attempts += 1
+                            self.logger.warning("Pixlet timed out, retrying after 5 seconds (%d/5)", attempts)
+                            time.sleep(5)
+                            continue
+
+                        raise ValueError(f"Pixlet failed: {error_message}")
+
+            image_bytes = temp_image_path.read_bytes()
+
+        image_base64 = base64.b64encode(image_bytes).decode("utf-8")
 
         yield {
-            "image_data": image_data,
+            "image_data": image_base64,
             "installation_id": installation_id,
             "background": background,
         }
